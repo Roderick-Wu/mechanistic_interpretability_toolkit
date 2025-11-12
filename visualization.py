@@ -2,9 +2,11 @@
 Visualization tools for mechanistic interpretability analysis.
 
 This module provides visualization functions for:
-- Logit lens analysis
+- Logit lens analysis (works with ModelAnalyzer)
 - Embedding visualization with dimensionality reduction (PCA, t-SNE, UMAP)
 - Activation analysis across layers
+
+Note: All logit lens functions now work directly with ModelAnalyzer instead of LogitLens.
 """
 
 import numpy as np
@@ -12,6 +14,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import List, Optional, Dict, Tuple, Union
 import torch
+import torch.nn.functional as F
 
 # Dimensionality reduction imports
 from sklearn.decomposition import PCA
@@ -24,54 +27,223 @@ except ImportError:
 
 
 # ============================================================================
+# HELPER FUNCTIONS FOR LOGIT LENS ANALYSIS
+# ============================================================================
+
+def _get_convergence_metrics(analyzer, text: str) -> Dict:
+    """
+    Helper function to compute convergence metrics from logit lens results.
+    
+    Args:
+        analyzer: ModelAnalyzer instance
+        text: Text to analyze
+        
+    Returns:
+        Dictionary containing convergence metrics
+    """
+    # Get logit lens results for all layers
+    results = analyzer.logit_lens(text, layer_indices=None, top_k=10)
+    
+    # Extract data
+    input_tokens = results['input_tokens']
+    num_layers = len(results['layers'])
+    num_positions = len(input_tokens)
+    
+    # Get final layer predictions (ground truth)
+    final_layer_idx = max(results['layers'].keys())
+    final_predictions = results['layers'][final_layer_idx]['top_k_tokens']
+    final_logits = results['layers'][final_layer_idx]['logits']
+    
+    # Initialize metrics
+    kl_divergence = np.zeros((num_layers, num_positions))
+    top1_match = np.zeros((num_layers, num_positions), dtype=bool)
+    
+    # Compute metrics for each layer
+    for layer_idx, layer_data in results['layers'].items():
+        logits = layer_data['logits']
+        predictions = layer_data['top_k_tokens']
+        
+        # KL divergence from final layer
+        for pos in range(num_positions):
+            final_probs = F.softmax(torch.tensor(final_logits[pos]), dim=-1)
+            layer_probs = F.softmax(torch.tensor(logits[pos]), dim=-1)
+            kl = F.kl_div(layer_probs.log(), final_probs, reduction='sum').item()
+            kl_divergence[layer_idx, pos] = kl
+        
+        # Top-1 match with final layer
+        for pos in range(num_positions):
+            top1_match[layer_idx, pos] = (predictions[pos][0] == final_predictions[pos][0])
+    
+    return {
+        'kl_divergence': kl_divergence,
+        'top1_match': top1_match,
+        'input_tokens': input_tokens
+    }
+
+
+def _compare_to_input(analyzer, text: str) -> Dict:
+    """
+    Helper function to compare layer predictions to input tokens.
+    
+    Args:
+        analyzer: ModelAnalyzer instance
+        text: Text to analyze
+        
+    Returns:
+        Dictionary containing input preservation metrics
+    """
+    # Get logit lens results
+    results = analyzer.logit_lens(text, layer_indices=None, top_k=100)
+    
+    input_tokens = results['input_tokens']
+    num_layers = len(results['layers'])
+    num_positions = len(input_tokens)
+    
+    # Track rank of each input token at each layer
+    input_token_rank = np.zeros((num_layers, num_positions))
+    
+    for layer_idx, layer_data in results['layers'].items():
+        for pos in range(num_positions):
+            top_k_tokens = layer_data['top_k_tokens'][pos]
+            input_token = input_tokens[pos]
+            
+            # Find rank of input token
+            if input_token in top_k_tokens:
+                input_token_rank[layer_idx, pos] = top_k_tokens.index(input_token)
+            else:
+                input_token_rank[layer_idx, pos] = 100  # Beyond top-k
+    
+    return {
+        'input_token_rank': input_token_rank,
+        'input_tokens': input_tokens
+    }
+
+
+def _plot_convergence_impl(analyzer, text: str, save_path: Optional[str] = None):
+    """
+    Helper function to plot convergence visualization.
+    
+    Args:
+        analyzer: ModelAnalyzer instance
+        text: Text to analyze
+        save_path: Optional path to save figure
+    """
+    metrics = _get_convergence_metrics(analyzer, text)
+    
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    
+    # Plot KL divergence
+    ax = axes[0]
+    im = ax.imshow(metrics['kl_divergence'], aspect='auto', cmap='viridis')
+    ax.set_xlabel('Token Position')
+    ax.set_ylabel('Layer')
+    ax.set_title('KL Divergence from Final Layer')
+    plt.colorbar(im, ax=ax)
+    
+    # Plot top-1 match
+    ax = axes[1]
+    im = ax.imshow(metrics['top1_match'], aspect='auto', cmap='RdYlGn', vmin=0, vmax=1)
+    ax.set_xlabel('Token Position')
+    ax.set_ylabel('Layer')
+    ax.set_title('Top-1 Match with Final Layer')
+    plt.colorbar(im, ax=ax)
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Saved to {save_path}")
+    else:
+        plt.show()
+
+
+def _plot_input_preservation_impl(analyzer, text: str, save_path: Optional[str] = None):
+    """
+    Helper function to plot input token preservation.
+    
+    Args:
+        analyzer: ModelAnalyzer instance
+        text: Text to analyze
+        save_path: Optional path to save figure
+    """
+    metrics = _compare_to_input(analyzer, text)
+    
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Plot rank heatmap (log scale for better visibility)
+    rank_data = np.log1p(metrics['input_token_rank'])  # log(1 + rank)
+    im = ax.imshow(rank_data, aspect='auto', cmap='viridis_r')
+    
+    ax.set_xlabel('Token Position')
+    ax.set_ylabel('Layer')
+    ax.set_title('Input Token Preservation (lower is better)')
+    
+    # Add colorbar with original rank values
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label('Log(1 + Rank)')
+    
+    # Add token labels if not too many
+    tokens = metrics['input_tokens']
+    if len(tokens) <= 20:
+        ax.set_xticks(range(len(tokens)))
+        ax.set_xticklabels(tokens, rotation=45, ha='right')
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Saved to {save_path}")
+    else:
+        plt.show()
+
+
+# ============================================================================
 # LOGIT LENS VISUALIZATION FUNCTIONS
 # ============================================================================
 
-def plot_logit_lens_basic(lens, text: str, model_path: str = None, 
+def plot_logit_lens_basic(analyzer, text: str, model_path: str = None, 
                           layer_step: int = 3, max_tokens: int = 8):
     """
     Basic logit lens visualization with printed output.
     
     Args:
-        lens: LogitLens instance (or None to create one)
+        analyzer: ModelAnalyzer instance (or None to create one)
         text: Text to analyze
-        model_path: Path to model (required if lens is None)
+        model_path: Path to model (required if analyzer is None)
         layer_step: Show every Nth layer
         max_tokens: Maximum tokens to display
     """
-    from logit_lens import LogitLens
-    
-    if lens is None:
+    if analyzer is None:
         if model_path is None:
-            raise ValueError("Must provide either lens or model_path")
-        lens = LogitLens(model_path, device="cpu")
+            raise ValueError("Must provide either analyzer or model_path")
+        from model_analyzer import ModelAnalyzer
+        analyzer = ModelAnalyzer(model_path, device="cpu", load_for_generation=True)
     
     print(f"Analyzing: '{text}'")
-    lens.print_layer_predictions(text, layer_step=layer_step, max_tokens=max_tokens)
+    analyzer.print_logit_lens(text, layer_step=layer_step, top_k=max_tokens)
 
 
-def plot_convergence_analysis(lens, text: str, model_path: str = None,
+def plot_convergence_analysis(analyzer, text: str, model_path: str = None,
                               save_path: Optional[str] = None):
     """
     Plot and analyze prediction convergence across layers.
     
     Args:
-        lens: LogitLens instance (or None to create one)
+        analyzer: ModelAnalyzer instance (or None to create one)
         text: Text to analyze
-        model_path: Path to model (required if lens is None)
+        model_path: Path to model (required if analyzer is None)
         save_path: Optional path to save figure
     """
-    from logit_lens import LogitLens
-    
-    if lens is None:
+    if analyzer is None:
         if model_path is None:
-            raise ValueError("Must provide either lens or model_path")
-        lens = LogitLens(model_path, device="cpu")
+            raise ValueError("Must provide either analyzer or model_path")
+        from model_analyzer import ModelAnalyzer
+        analyzer = ModelAnalyzer(model_path, device="cpu", load_for_generation=True)
     
     print(f"Analyzing: '{text[:60]}...'")
     
     # Get convergence metrics
-    metrics = lens.get_convergence_metrics(text)
+    metrics = _get_convergence_metrics(analyzer, text)
     
     print(f"\nConvergence Statistics:")
     print(f"  - KL divergence shape: {metrics['kl_divergence'].shape}")
@@ -91,31 +263,30 @@ def plot_convergence_analysis(lens, text: str, model_path: str = None,
     
     # Generate plots
     print("\nGenerating convergence visualization...")
-    lens.plot_convergence(text[:50], save_path=save_path)
+    _plot_convergence_impl(analyzer, text[:50], save_path=save_path)
 
 
-def plot_token_preservation(lens, text: str, model_path: str = None,
+def plot_token_preservation(analyzer, text: str, model_path: str = None,
                            save_path: Optional[str] = None):
     """
     Visualize how input tokens are preserved across layers.
     
     Args:
-        lens: LogitLens instance (or None to create one)
+        analyzer: ModelAnalyzer instance (or None to create one)
         text: Text to analyze
-        model_path: Path to model (required if lens is None)
+        model_path: Path to model (required if analyzer is None)
         save_path: Optional path to save figure
     """
-    from logit_lens import LogitLens
-    
-    if lens is None:
+    if analyzer is None:
         if model_path is None:
-            raise ValueError("Must provide either lens or model_path")
-        lens = LogitLens(model_path, device="cpu")
+            raise ValueError("Must provide either analyzer or model_path")
+        from model_analyzer import ModelAnalyzer
+        analyzer = ModelAnalyzer(model_path, device="cpu", load_for_generation=True)
     
     print(f"Analyzing: '{text}'")
     
     # Get input preservation metrics
-    metrics = lens.compare_to_input(text)
+    metrics = _compare_to_input(analyzer, text)
     
     print(f"\nInput Token Preservation:")
     tokens = metrics['input_tokens']
@@ -131,26 +302,25 @@ def plot_token_preservation(lens, text: str, model_path: str = None,
             print(f"  - Final layer rank: {ranks[-1]}")
     
     print("\nGenerating preservation visualization...")
-    lens.plot_input_preservation(text, save_path=save_path)
+    _plot_input_preservation_impl(analyzer, text, save_path=save_path)
 
 
-def plot_prediction_refinement(lens, text: str, model_path: str = None,
+def plot_prediction_refinement(analyzer, text: str, model_path: str = None,
                                layers: Optional[List[int]] = None):
     """
     Show how predictions refine over specific layers.
     
     Args:
-        lens: LogitLens instance (or None to create one)
+        analyzer: ModelAnalyzer instance (or None to create one)
         text: Text to analyze
-        model_path: Path to model (required if lens is None)
+        model_path: Path to model (required if analyzer is None)
         layers: List of layer indices to examine
     """
-    from logit_lens import LogitLens
-    
-    if lens is None:
+    if analyzer is None:
         if model_path is None:
-            raise ValueError("Must provide either lens or model_path")
-        lens = LogitLens(model_path, device="cpu")
+            raise ValueError("Must provide either analyzer or model_path")
+        from model_analyzer import ModelAnalyzer
+        analyzer = ModelAnalyzer(model_path, device="cpu", load_for_generation=True)
     
     if layers is None:
         layers = [0, 3, 6, 9, 11]
@@ -158,7 +328,7 @@ def plot_prediction_refinement(lens, text: str, model_path: str = None,
     print(f"Analyzing: '{text}'")
     
     # Get detailed predictions
-    results = lens.get_layer_predictions(text, layer_indices=layers)
+    results = analyzer.logit_lens(text, layer_indices=layers, top_k=10)
     
     print("\nTop-3 predictions across selected layers:")
     print(f"Input tokens: {results['input_tokens']}")

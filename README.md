@@ -1,10 +1,122 @@
 # Mechanistic Interpretability Toolkit
 
-A toolkit for mechanistic interpretability research on transformer language models. Features include model inspection, **Logit Lens** analysis, **embedding visualization** with multiple dimensionality reduction techniques, and **causal interventions** (activation patching and steering vectors).
+A unified toolkit for mechanistic interpretability research on transformer language models. The toolkit centers around the **`ModelAnalyzer`** class, which loads a model once and provides a comprehensive interface for generation, analysis, and intervention.
+
+## Quick Start
+
+```python
+from model_analyzer import ModelAnalyzer
+
+# Load model once
+analyzer = ModelAnalyzer("../models/gpt2_model")
+
+# Generate text
+text = analyzer.generate("The capital of France is")
+
+# Extract activations
+activations = analyzer.extract_activations("Hello world")
+
+# Apply logit lens
+analyzer.print_logit_lens("The quick brown fox")
+
+# Generate with steering
+steered = analyzer.generate_with_steering(
+    prompt="Today I feel",
+    positive_examples=["I am happy"],
+    negative_examples=["I am sad"]
+)
+```
+
+## Core Architecture
+
+### ModelAnalyzer Class
+
+The `ModelAnalyzer` class provides a unified interface for all interpretability operations:
+
+**Initialization:**
+```python
+analyzer = ModelAnalyzer(
+    model_path="../models/gpt2_model",
+    device="cpu",  # or "cuda"
+    load_for_generation=True  # Set False if you don't need text generation
+)
+```
+
+**Key Features:**
+- **Single model instance** - Load once, use for everything
+- **Text generation** - With optional activation recording
+- **Activation extraction** - Access internal representations
+- **Logit lens analysis** - See predictions at each layer
+- **Causal interventions** - Activation patching and steering vectors
+- **Model inspection** - Architecture information and layer details
 
 ## Features
 
-### 1. Model Loader (`model_loader.py`)
+### 1. Unified ModelAnalyzer (`model_analyzer.py`) ⭐ NEW
+
+The central class that provides all analysis capabilities in one interface.
+
+**Text Generation:**
+```python
+# Basic generation
+text = analyzer.generate("Once upon a time", max_new_tokens=50)
+
+# Generation with activation recording
+text, activations = analyzer.generate("Hello", return_activations=True)
+```
+
+**Activation Extraction:**
+```python
+# Extract activations
+record = analyzer.extract_activations("The cat sat on the mat")
+
+# Batch extraction
+records = analyzer.extract_batch_activations(["Prompt 1", "Prompt 2"])
+
+# Save activations
+analyzer.save_activations(record, "output.pkl", format='pickle')
+```
+
+**Logit Lens:**
+```python
+# Get predictions at each layer
+predictions = analyzer.logit_lens("The capital of France is")
+
+# Print formatted results
+analyzer.print_logit_lens("The quick brown fox", layer_step=2)
+```
+
+**Causal Interventions:**
+```python
+# Generate with steering vector
+text = analyzer.generate_with_steering(
+    prompt="Today I feel",
+    positive_examples=["I am happy", "This is great"],
+    negative_examples=["I am sad", "This is terrible"],
+    coefficient=2.0
+)
+
+# Path patching to find causally important layers
+effects = analyzer.path_patching(
+    clean_prompt="The Eiffel Tower is in",
+    corrupted_prompt="The Colosseum is in"
+)
+```
+
+**Model Inspection:**
+```python
+# Get architecture summary
+analyzer.print_architecture_summary()
+
+# Get layer information
+num_layers = analyzer.get_num_layers()
+layer_names = analyzer.get_layer_names()
+```
+
+### 2. Model Loader (`model_loader.py`)
+
+**Note:** For most use cases, use `ModelAnalyzer` instead. This module is kept for backward compatibility.
+
 Load and inspect transformer models to extract architectural information.
 
 **Key capabilities:**
@@ -94,7 +206,55 @@ compare_reduction_methods(embeddings, labels=tokens,
                          methods=['pca', 'tsne', 'umap'])
 ```
 
-### 4. Intervention Tools (`intervention.py`)
+### 4. Activation Extraction (`activation_extraction.py`)
+Extract and save model activations during forward passes for detailed analysis.
+
+**Key capabilities:**
+- Extract activations from all or specific layers
+- Extract attention weights alongside activations
+- Process single prompts or batches
+- Save activations in multiple formats (JSON, Pickle, PyTorch, NumPy)
+- Compare activations between different prompts
+- Compute activation statistics (mean, std, norm, etc.)
+
+**Supported formats:**
+- **JSON** - Human-readable metadata (shapes only, no tensor data)
+- **Pickle** - Full Python objects with tensors (Python-only)
+- **PyTorch (.pt)** - PyTorch native format for loading back into PyTorch
+- **NumPy (.npz)** - NumPy compressed format for scientific computing
+
+**Example:**
+```python
+from activation_extraction import ActivationExtractor, compare_activations
+
+# Create extractor
+extractor = ActivationExtractor(model, tokenizer)
+
+# Extract activations from a prompt
+record = extractor.extract_activations(
+    prompt="The quick brown fox",
+    include_attention=True,
+    return_logits=True
+)
+
+# Access the data
+print(record.tokens)  # List of tokens
+print(record.layer_activations.keys())  # Available layers
+activation = record.layer_activations['transformer.h.5']  # Get specific layer
+
+# Save to disk
+extractor.save_activations(record, "output.pkl", format='pickle')
+
+# Load back
+loaded = ActivationExtractor.load_activations("output.pkl")
+
+# Compare activations
+rec1 = extractor.extract_activations("The cat")
+rec2 = extractor.extract_activations("The dog")
+similarity = compare_activations(rec1, rec2, 'transformer.h.5', metric='cosine')
+```
+
+### 5. Intervention Tools (`intervention.py`)
 Perform causal interventions to understand model behavior.
 
 **Activation Patching:**
@@ -155,6 +315,8 @@ with handler:
 
 ## Quick Start
 
+### Installation
+
 1. Install dependencies:
 ```bash
 pip install -r requirements.txt
@@ -162,10 +324,10 @@ pip install -r requirements.txt
 
 2. Download a model locally (e.g., GPT-2):
 ```python
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 model_name = "gpt2"
-model = AutoModel.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(model_name)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
 # Save locally
@@ -173,14 +335,145 @@ model.save_pretrained("../models/gpt2_model")
 tokenizer.save_pretrained("../models/gpt2_model")
 ```
 
-3. Run the main demo:
+### Basic Usage with ModelAnalyzer
+
+```python
+from model_analyzer import ModelAnalyzer
+
+# Initialize once
+analyzer = ModelAnalyzer("../models/gpt2_model")
+
+# 1. Generate text
+text = analyzer.generate("The capital of France is", max_new_tokens=10)
+
+# 2. Extract activations
+record = analyzer.extract_activations("Hello world")
+print(f"Captured {len(record.layer_activations)} layers")
+
+# 3. Apply logit lens
+analyzer.print_logit_lens("The quick brown fox", layer_step=2)
+
+# 4. Generate with steering
+steered = analyzer.generate_with_steering(
+    prompt="The movie was",
+    positive_examples=["The movie was amazing"],
+    negative_examples=["The movie was terrible"]
+)
+
+# 5. Path patching
+effects = analyzer.path_patching(
+    "The Eiffel Tower is in",
+    "The Colosseum is in"
+)
+```
+
+### Run Demonstrations
+
+Run the unified analyzer demo:
 ```bash
-python main.py
+python analyzer_demo.py
+```
+
+Run comprehensive examples (older modular approach):
+```bash
+python examples.py
 ```
 
 ## Usage Examples
 
-### Basic Model Inspection
+### Unified Approach (Recommended)
+
+#### Basic Analysis
+```python
+from model_analyzer import ModelAnalyzer
+
+# Initialize
+analyzer = ModelAnalyzer("../models/gpt2_model")
+
+# Inspect model
+analyzer.print_architecture_summary()
+
+# Generate text
+output = analyzer.generate("Once upon a time", max_new_tokens=50)
+print(output)
+```
+
+#### Generate with Activation Recording
+```python
+# Generate and record activations simultaneously
+text, activations = analyzer.generate(
+    prompt="The cat",
+    max_new_tokens=20,
+    return_activations=True
+)
+
+print(f"Generated: {text}")
+print(f"Recorded {len(activations.layer_activations)} layers")
+
+# Save activations
+analyzer.save_activations(activations, "generation_acts.pkl")
+```
+
+#### Logit Lens Analysis
+```python
+# Get predictions at each layer
+predictions = analyzer.logit_lens("The capital of France is")
+
+for layer_idx, preds in predictions.items():
+    print(f"Layer {layer_idx}: {preds[0]}")
+
+# Or print formatted
+analyzer.print_logit_lens("The quick brown fox", layer_step=2, top_k=5)
+```
+
+#### Steering Vectors
+```python
+# Generate with behavioral steering
+happy_text = analyzer.generate_with_steering(
+    prompt="Today is",
+    positive_examples=["Today is wonderful", "I am so happy"],
+    negative_examples=["Today is terrible", "I am so sad"],
+    coefficient=2.0,
+    max_new_tokens=30
+)
+
+print(happy_text)
+```
+
+#### Path Patching for Causal Analysis
+```python
+# Find which layers are causally important
+effects = analyzer.path_patching(
+    clean_prompt="The Eiffel Tower is in Paris",
+    corrupted_prompt="The Colosseum is in Rome"
+)
+
+# Show most important layers
+sorted_effects = sorted(effects.items(), key=lambda x: abs(x[1]), reverse=True)
+for layer_idx, effect in sorted_effects[:5]:
+    print(f"Layer {layer_idx}: {effect:.4f}")
+```
+
+#### Batch Activation Extraction
+```python
+# Extract activations for multiple prompts
+prompts = [
+    "Paris is the capital of",
+    "London is the capital of",
+    "Berlin is the capital of"
+]
+
+records = analyzer.extract_batch_activations(prompts)
+
+# Save all at once
+analyzer.save_activations(records, "batch_activations.pkl")
+```
+
+### Modular Approach (Legacy)
+
+For backward compatibility, you can still use individual modules:
+
+#### Model Inspection
 ```python
 from model_loader import ModelInspector
 
@@ -221,6 +514,35 @@ compare_reduction_methods(embeddings, labels=tokens,
 # 2D visualization with specific method
 plot_embeddings_2d(embeddings, labels=tokens, method='umap',
                   title='Word Embeddings (UMAP)')
+```
+
+### Activation Extraction
+```python
+from activation_extraction import ActivationExtractor, get_activation_statistics
+from transformers import AutoModel, AutoTokenizer
+
+model = AutoModel.from_pretrained("../models/gpt2_model", local_files_only=True)
+tokenizer = AutoTokenizer.from_pretrained("../models/gpt2_model", local_files_only=True)
+
+# Create extractor
+extractor = ActivationExtractor(model, tokenizer)
+
+# Extract from single prompt
+record = extractor.extract_activations("The capital of France is")
+
+# Get statistics for a specific layer
+stats = get_activation_statistics(record, 'transformer.h.5')
+print(f"Mean: {stats['mean']:.4f}, Std: {stats['std']:.4f}")
+
+# Save in different formats
+extractor.save_activations(record, "acts.pkl", format='pickle')
+extractor.save_activations(record, "acts.json", format='json')
+extractor.save_activations(record, "acts.pt", format='pt')
+
+# Batch processing
+prompts = ["Paris is the capital of", "London is the capital of"]
+batch_records = extractor.extract_batch_activations(prompts)
+extractor.save_activations(batch_records, "batch.pkl", format='pickle')
 ```
 
 ### Activation Patching
@@ -311,15 +633,45 @@ Shows 2 metrics:
 ## File Structure
 
 ```
-llm_preference/
-├── model_loader.py       # Model loading and inspection
-├── logit_lens.py         # Logit lens implementation
-├── visualization.py      # Visualization tools (logit lens + embeddings)
-├── intervention.py       # Activation patching & steering vectors ⭐
-├── main.py              # Main demo script (run this!)
-├── requirements.txt     # Python dependencies
-├── README.md           # This file
-└── VISUALIZATION_GUIDE.md  # Visualization quick reference
+mech_interp_tk/
+├── model_analyzer.py         # 🌟 UNIFIED INTERFACE - Use this!
+├── analyzer_demo.py           # Demo of ModelAnalyzer class
+├── model_loader.py            # Model loading (legacy, use ModelAnalyzer instead)
+├── logit_lens.py              # Logit lens implementation  
+├── activation_extraction.py   # Activation extraction utilities
+├── intervention.py            # Activation patching & steering vectors
+├── visualization.py           # Visualization tools (still separate)
+├── examples.py                # Comprehensive examples (modular approach)
+├── requirements.txt           # Python dependencies
+├── README.md                  # This file
+├── VISUALIZATION_GUIDE.md     # Visualization quick reference
+└── INTERVENTION_GUIDE.md      # Intervention quick reference
+```
+
+## Recommended Workflow
+
+### For New Projects: Use `ModelAnalyzer`
+
+```python
+from model_analyzer import ModelAnalyzer
+
+# Load once
+analyzer = ModelAnalyzer("path/to/model")
+
+# Do everything with the same instance
+text = analyzer.generate("prompt")
+acts = analyzer.extract_activations("prompt")
+analyzer.print_logit_lens("prompt")
+steered = analyzer.generate_with_steering(...)
+```
+
+### For Visualization: Use Separate Module
+
+```python
+from visualization import plot_embeddings_2d, plot_convergence_analysis
+
+# Visualization remains separate for flexibility
+plot_embeddings_2d(embeddings, labels=tokens, method='pca')
 ```
 
 ## Advanced Usage
@@ -409,6 +761,15 @@ The toolkit can help answer:
 
 10. **Which neurons are most important for a prediction?**
     - Use `compute_feature_attribution()` to identify critical features
+
+11. **What are the actual activation values during a forward pass?**
+    - Use `ActivationExtractor.extract_activations()` to capture all layer outputs
+
+12. **How do activations differ between similar prompts?**
+    - Use `compare_activations()` to measure cosine similarity or L2 distance
+
+13. **Can I save activations for later analysis?**
+    - Use `save_activations()` with format='pickle', 'pt', 'npz', or 'json'
 
 ## References
 
