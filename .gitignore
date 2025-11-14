@@ -2,3 +2,4 @@
 *.sample
 *.npy
 *.pkl
+*.pt
