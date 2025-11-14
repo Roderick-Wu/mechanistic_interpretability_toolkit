@@ -1,5 +1,6 @@
 *.pyc
 *.sample
-*.npy
-*.pkl
+activations/
 *.pt
+*.pkl
+*.npz
