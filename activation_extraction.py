@@ -64,6 +64,8 @@ class ActivationRecord:
                     k: list(v.shape) for k, v in self.attention_weights.items()
                 }
         
+        return result
+    
 # ===================================================================
 # SAVE/LOAD UTILITIES
 # ===================================================================
@@ -173,11 +175,13 @@ def load_activations(
         format: Load format (auto-detected from extension if None)
         
     Returns:
-        Single ActivationRecord or list of records
+        Single ActivationRecord (if only one was saved) or list of ActivationRecords.
+        Always returns ActivationRecord objects for easy use with logit_lens and other analysis functions.
         
     Example:
         >>> records = load_activations("activations.pkl")
-        >>> print(records[0].prompt)
+        >>> # Use directly with logit lens
+        >>> analyzer.logit_lens_on_activation(records, layer_indices=[0, 6, 11])
     """
     input_path = Path(input_path)
     
@@ -198,8 +202,33 @@ def load_activations(
     if format == 'json':
         with open(input_path, 'r') as f:
             data = json.load(f)
-        print(f"Loaded {len(data)} record(s) from {input_path} (JSON format - no tensors)")
-        return data  # Returns dict, not ActivationRecord
+        print(f"Loaded {len(data)} record(s) from {input_path} (JSON format)")
+        
+        # Convert dict to ActivationRecord (note: JSON format doesn't include tensors by default)
+        records = []
+        for item in data:
+            # Reconstruct tensors if they were saved
+            layer_activations = {}
+            if 'layer_activations' in item:
+                for layer_name, tensor_list in item['layer_activations'].items():
+                    layer_activations[layer_name] = torch.tensor(tensor_list)
+            
+            attention_weights = None
+            if 'attention_weights' in item:
+                attention_weights = {}
+                for layer_name, tensor_list in item['attention_weights'].items():
+                    attention_weights[layer_name] = torch.tensor(tensor_list)
+            
+            records.append(ActivationRecord(
+                prompt=item['prompt'],
+                tokens=item['tokens'],
+                token_ids=item['token_ids'],
+                layer_activations=layer_activations,
+                attention_weights=attention_weights,
+                metadata=item.get('metadata')
+            ))
+        
+        return records[0] if len(records) == 1 else records
     
     elif format == 'pickle':
         if str(input_path).endswith('.gz'):
@@ -210,17 +239,70 @@ def load_activations(
             with open(input_path, 'rb') as f:
                 records = pickle.load(f)
         print(f"Loaded {len(records)} record(s) from {input_path} (Pickle format)")
-        return records
+        
+        # Pickle already stores ActivationRecord objects
+        return records[0] if len(records) == 1 else records
     
     elif format == 'pt':
         data = torch.load(input_path)
         print(f"Loaded {len(data['prompts'])} record(s) from {input_path} (PyTorch format)")
-        return data  # Returns dict structure
+        
+        # Convert dict structure to ActivationRecord objects
+        records = []
+        for i in range(len(data['prompts'])):
+            records.append(ActivationRecord(
+                prompt=data['prompts'][i],
+                tokens=data['tokens'][i],
+                token_ids=data['token_ids'][i],
+                layer_activations=data['layer_activations'][i],
+                attention_weights=data['attention_weights'][i],
+                metadata=data['metadata'][i]
+            ))
+        
+        return records[0] if len(records) == 1 else records
     
     elif format == 'npz':
         data = np.load(input_path, allow_pickle=True)
         print(f"Loaded activations from {input_path} (NumPy format)")
-        return dict(data)  # Returns dict of arrays
+        
+        # Parse NumPy format back into ActivationRecord objects
+        # Group by record prefix
+        records = []
+        record_indices = set()
+        for key in data.keys():
+            if key.startswith('record_'):
+                idx = int(key.split('_')[1])
+                record_indices.add(idx)
+        
+        for i in sorted(record_indices):
+            prefix = f'record_{i}_'
+            
+            # Extract layer activations
+            layer_activations = {}
+            for key in data.keys():
+                if key.startswith(f'{prefix}layer_'):
+                    layer_name = key.replace(f'{prefix}layer_', '').replace('_', '.')
+                    layer_activations[layer_name] = torch.from_numpy(data[key])
+            
+            # Extract attention weights if present
+            attention_weights = None
+            attn_keys = [k for k in data.keys() if k.startswith(f'{prefix}attn_')]
+            if attn_keys:
+                attention_weights = {}
+                for key in attn_keys:
+                    layer_name = key.replace(f'{prefix}attn_', '').replace('_', '.')
+                    attention_weights[layer_name] = torch.from_numpy(data[key])
+            
+            records.append(ActivationRecord(
+                prompt=str(data[f'{prefix}prompt']),
+                tokens=data[f'{prefix}tokens'].tolist(),
+                token_ids=data[f'{prefix}token_ids'].tolist(),
+                layer_activations=layer_activations,
+                attention_weights=attention_weights,
+                metadata=None
+            ))
+        
+        return records[0] if len(records) == 1 else records
     
     else:
         raise ValueError(f"Unsupported format: {format}")
