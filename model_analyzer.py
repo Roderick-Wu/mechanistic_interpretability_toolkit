@@ -95,11 +95,13 @@ class ModelAnalyzer:
         print(f"Initializing ModelAnalyzer for {self.model_path}")
         print(f"Device: {self.device}")
         
+        self.config = None
+        self.tokenizer = None
+        self.model = None
+        self.layer_prefix = None
         # Load model and tokenizer
-        self._load_model()
-        
-        # Detect layer naming convention for activation extraction
-        self._detect_layer_naming()
+        #self.load_model()
+        #self._detect_layer_naming()
         
         # Initialize intervention handler (created on-demand)
         self._intervention_handler = None
@@ -110,13 +112,25 @@ class ModelAnalyzer:
         
         print(f"[OK] ModelAnalyzer ready")
     
-    def _load_model(self):
+    def load_model(self):
         """Load the model and tokenizer."""
         print(f"Loading model from {self.model_path}...")
         
         # Load config
         self.config = AutoConfig.from_pretrained(str(self.model_path))
-        
+
+        outputting_attns = False
+        if hasattr(self.config, "attn_implementation"):
+            #self.config.attn_implementation = "eager"
+            setattr(self.config, "attn_implementation", "eager")
+            print("Set attn_implementation to eager in config")
+            outputting_attns = True
+        elif hasattr(self.config, "_attn_implementation"):
+            #self.config._attn_implementation = "eager"
+            setattr(self.config, "_attn_implementation", "eager")
+            print("Set _attn_implementation to eager in config")
+            outputting_attns = True
+
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(str(self.model_path))
         
@@ -136,8 +150,15 @@ class ModelAnalyzer:
                 local_files_only=True
             ).to(self.device)
 
-        self.config.set_attn_implementation("eager")
-        
+        #if not outputting_attns:
+        try:
+            self.model.set_attn_implementation("eager")
+            print("Set attn_implementation to eager in model")
+        except:
+            print("Could not set attn_implementation in model")
+
+        self._detect_layer_naming()
+
         self.model.eval()
         print(f"[OK] Model loaded on {self.device}")
     
