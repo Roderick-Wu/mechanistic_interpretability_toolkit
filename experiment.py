@@ -58,7 +58,7 @@ def main():
 
 
     test_prompts = []
-    test_prompts += [f"{i}+{j}=" for i in range(1, 100) for j in range(1, 100)]
+    test_prompts += [f"{i}+{j}=" for i in range(0, 100) for j in range(0, 100)]
     #test_prompts += [f"{i}00+{j}00=" for i in range(1, 6) for j in range(1, 6)]
     #test_prompts += [f"336+639=", "958+501=", "698+316="]
 
@@ -67,6 +67,10 @@ def main():
     print(f"Found {len(layer_names_list)} layers: {layer_names_list[:3]}...{layer_names_list[-3:]}")
     
     dotted_with_base = {
+        layer_name: np.zeros((99, 99))
+        for layer_name in layer_names_list
+    }
+    max_attn_weights = {
         layer_name: np.zeros((99, 99))
         for layer_name in layer_names_list
     }
@@ -91,10 +95,26 @@ def main():
         y = int(y)
         x = int(x.replace("=", ""))
 
-        for layer_name, layer_activations in record.layer_activations.items():
-            print(f"Layer: {layer_name}, Activations shape: {layer_activations.shape}")
+        token_ind = prompt.index("=")
 
-            dotted_with_base[layer_name][y-1, x-1] = np.dot(base_activations[layer_name][0, 4, :].cpu().numpy(), layer_activations[0, 4, :].cpu().numpy())
+        ######
+        if token_ind != 4:
+            print(prompt)
+            print(f"Token index of '=': {token_ind}")
+            print(record.tokens)
+        ######
+
+        for layer_name, layer_activations in record.layer_activations.items():
+            #print(f"Layer: {layer_name}, Activations shape: {layer_activations.shape}")
+
+            dotted_with_base[layer_name][y, x] = np.dot(base_activations[layer_name][0, token_ind, :].cpu().numpy(), layer_activations[0, token_ind, :].cpu().numpy())
+        
+        for layer_name, layer_attn_weights in record.attention_weights.items():
+            #print(f"Layer: {layer_name}, Attention Weights shape: {layer_attn_weights.shape}")
+
+            # (Batch, Heads, Query Len, Key Len)
+            max_attn_weights[layer_name][y, x] = np.argmax(layer_attn_weights[0, :, token_ind, token_ind].cpu().numpy())
+
 
         del record
         del generated_text
@@ -115,7 +135,20 @@ def main():
         plt.xlabel("X values", fontsize=12)
         plt.ylabel("Y values", fontsize=12)
         plt.tight_layout()
-        plt.savefig(f"PLOTS/activation_dot_product_layer_{layer}.png", 
+        plt.savefig(f"PLOTS/activation_dot_product_{layer}.png", 
+                    dpi=150, bbox_inches='tight')
+        plt.close()  # Close figure to free memory
+
+    for layer in layer_names_list:
+        plt.figure(figsize=(16, 14))
+        sns.heatmap(max_attn_weights[layer], annot=False, cmap="magma", 
+                    cbar_kws={'label': 'Max Attention Weight'})
+        plt.title("Max Attention Weights at '=' Token (Prompt 'X+Y=')", 
+                  fontsize=14, pad=20)
+        plt.xlabel("X values", fontsize=12)
+        plt.ylabel("Y values", fontsize=12)
+        plt.tight_layout()
+        plt.savefig(f"PLOTS/max_attention_weights_{layer}.png", 
                     dpi=150, bbox_inches='tight')
         plt.close()  # Close figure to free memory
 
